@@ -1,0 +1,247 @@
+#include <Wire.h>
+#include <DHT.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// ---------- DHT ----------
+#define DHTPIN 5
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// ---------- OLED ----------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_ADDR 0x3C
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// ---------- I2C PINS (ESP32 default) ----------
+#define I2C_SDA 21
+#define I2C_SCL 22
+
+unsigned long lastReadMs = 0;
+const unsigned long readIntervalMs = 2000;
+int readAttempts = 0;
+int successfulReads = 0;
+int failedReads = 0;
+
+// Display mode: 0 = Temp/Humidity only 
+int displayMode = 0;
+unsigned long lastModeChange = 0;
+const unsigned long modeChangeInterval = 8000; // Switch every 8 seconds
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  
+  Serial.println("\n\n==================================");
+  Serial.println("ESP32 + DHT11 + OLED");
+  Serial.println("==================================\n");
+  
+  // Start I2C
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Serial.print("I2C initialized on SDA=");
+  Serial.print(I2C_SDA);
+  Serial.print(", SCL=");
+  Serial.println(I2C_SCL);
+  
+  // Start OLED
+  Serial.print("Initializing OLED at address 0x");
+  Serial.print(OLED_ADDR, HEX);
+  Serial.print("...");
+  
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println(" FAILED!");
+    Serial.println("ERROR: OLED not found. Check:");
+    Serial.println("  - Wiring (SDA to GPIO21, SCL to GPIO22)");
+    Serial.println("  - OLED address (try 0x3D if 0x3C fails)");
+    Serial.println("  - Power connections");
+    while (true) delay(100);
+  }
+  Serial.println(" SUCCESS!");
+  
+  // Initialize display settings
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.display();
+  delay(100);
+  
+  // Initialize DHT11 while showing animation
+  Serial.println("\nInitializing DHT11 sensor...");
+  pinMode(DHTPIN, INPUT_PULLUP);
+  dht.begin();
+  Serial.println("DHT11 initialized!");
+  
+  //  startup animation with FP and orbiting ball
+  for (int frame = 0; frame < 120; frame++) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    
+    // Draw large FP letters in center
+    display.setTextSize(4);
+    display.setCursor(36, 12);
+    display.print("FP");
+    
+    // Draw "PORTABLE ELECTRONICS" text below FP
+    display.setTextSize(1);
+    display.setCursor(16, 48);
+    display.print("PORTABLE");
+    display.setCursor(10, 56);
+    display.print("ELECTRONICS");
+    
+    int centerX = 64;
+    int centerY = 28;
+    
+    // Single ball - elliptical orbit (horizontal/side to side)
+    float angle = (frame / 120.0) * 2.0 * PI;
+    int ellipseRadiusX = 40; // Wider horizontally
+    int ellipseRadiusY = 20; // Narrower vertically (creates side-to-side illusion)
+    int ballX = centerX + (int)(ellipseRadiusX * cos(angle));
+    int ballY = centerY + (int)(ellipseRadiusY * sin(angle));
+    
+    // Draw trailing path behind the ball
+    for (int trail = 1; trail <= 30; trail++) {
+      float trailAngle = ((frame - trail) / 120.0) * 2.0 * PI;
+      int trailX = centerX + (int)(ellipseRadiusX * cos(trailAngle));
+      int trailY = centerY + (int)(ellipseRadiusY * sin(trailAngle));
+      display.drawPixel(trailX, trailY, SSD1306_WHITE);
+    }
+    
+    // Draw orbiting ball
+    display.fillCircle(ballX, ballY, 3, SSD1306_WHITE);
+    
+    display.display();
+    delay(25); // Smooth animation
+  }
+  
+  delay(2000); // Give DHT11 time to stabilize after animation
+  Serial.println("\n--- Starting continuous monitoring ---\n");
+}
+
+void drawScreen(float tempF, float hum, bool sensorError) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("ESP32  |  DHT11");
+  display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
+  
+  if (sensorError) {
+    display.setTextSize(2);
+    display.setCursor(0, 18);
+    display.println("DHT Err");
+    display.setTextSize(1);
+    display.setCursor(0, 46);
+    display.println("Check wiring!");
+    
+    // Vertical reads counter on right side
+    display.setCursor(110, 18);
+    display.print(successfulReads);
+    display.setCursor(110, 26);
+    display.print("/");
+    display.setCursor(110, 34);
+    display.print(readAttempts);
+  } else {
+    // Display Temperature and Humidity
+    display.setTextSize(2);
+    display.setCursor(0, 18);
+    display.print("T:");
+    display.print(tempF, 1);
+    display.println("F");
+    display.print("H:");
+    display.print(hum, 1);
+    display.println("%");
+    
+    // Vertical reads counter on right side
+    display.setTextSize(1);
+    display.setCursor(110, 18);
+    display.print(successfulReads);
+    display.setCursor(110, 26);
+    display.print("/");
+    display.setCursor(110, 34);
+    display.print(readAttempts);
+  }
+  
+  display.display();
+}
+
+void loop() {
+  if (millis() - lastReadMs >= readIntervalMs) {
+    lastReadMs = millis();
+    readAttempts++;
+    
+    Serial.println("========================================");
+    Serial.print("Read Attempt #");
+    Serial.println(readAttempts);
+    Serial.println("========================================");
+    
+    // Read sensor
+    Serial.println("Reading DHT11...");
+    float hum = dht.readHumidity();
+    float tempF = dht.readTemperature(true); // true = Fahrenheit
+    
+    // Debug raw values
+    Serial.print("  Raw Humidity value: ");
+    Serial.println(hum);
+    Serial.print("  Raw Temperature value: ");
+    Serial.println(tempF);
+    
+    // Check for errors
+    bool humError = isnan(hum);
+    bool tempError = isnan(tempF);
+    
+    if (humError) {
+      Serial.println("  ❌ ERROR: Humidity reading is NaN (Not a Number)");
+    } else {
+      Serial.print("  ✓ Humidity OK: ");
+      Serial.print(hum);
+      Serial.println("%");
+    }
+    
+    if (tempError) {
+      Serial.println("  ❌ ERROR: Temperature reading is NaN (Not a Number)");
+    } else {
+      Serial.print("  ✓ Temperature OK: ");
+      Serial.print(tempF);
+      Serial.println("°F");
+    }
+    
+    // Overall status
+    if (humError || tempError) {
+      failedReads++;
+      Serial.println("\n⚠ SENSOR READ FAILED");
+      Serial.println("\nTroubleshooting steps:");
+      Serial.println("1. Check DHT11 wiring:");
+      Serial.println("   - VCC to 5V (or 3.3V)");
+      Serial.println("   - DATA to GPIO 5");
+      Serial.println("   - GND to GND");
+      Serial.println("2. Check for 4.7kΩ-10kΩ pull-up resistor");
+      Serial.println("   (or verify module has built-in resistor)");
+      Serial.println("3. Try powering DHT11 from 5V instead of 3.3V");
+      Serial.println("4. Verify DHT11 module is not damaged");
+      Serial.print("\nSuccess rate: ");
+      Serial.print(successfulReads);
+      Serial.print("/");
+      Serial.print(readAttempts);
+      Serial.print(" (");
+      if (readAttempts > 0) {
+        Serial.print((successfulReads * 100) / readAttempts);
+      }
+      Serial.println("%)");
+      
+      drawScreen(tempF, hum, true);
+    } else {
+      successfulReads++;
+      Serial.println("\n✓ SENSOR READ SUCCESSFUL");
+      Serial.print("Success rate: ");
+      Serial.print(successfulReads);
+      Serial.print("/");
+      Serial.print(readAttempts);
+      Serial.print(" (");
+      Serial.print((successfulReads * 100) / readAttempts);
+      Serial.println("%)");
+      
+      drawScreen(tempF, hum, false);
+    }
+    
+    Serial.println("========================================\n");
+  }
+}
